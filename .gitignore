@@ -1,0 +1,12 @@
+# Secrets — NEVER deploy these
+.env
+payer_wallet.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local-only helpers
+*.log

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pay with MetaMask — Verve Paywall Test</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#0a0b0c; color:#f0f1f2; max-width:640px; margin:60px auto; padding:0 20px; }
+  h1 { font-size: 22px; }
+  .card { background:#141517; border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:24px; margin:16px 0; }
+  button { background:#5e6ad2; color:white; border:none; padding:14px 24px; border-radius:8px; font-size:16px; cursor:pointer; width:100%; }
+  button:hover { background:#7170ff; }
+  button:disabled { background:#333; cursor:not-allowed; }
+  .status { margin-top:16px; padding:12px; border-radius:8px; font-family: monospace; font-size:13px; white-space:pre-wrap; word-break:break-all; }
+  .status.ok { background:#0d2818; border:1px solid #1a5c33; }
+  .status.err { background:#2b1414; border:1px solid #5c1a1a; }
+  .status.info { background:#14202b; border:1px solid #1a3d5c; }
+  code { background:#1e1f22; padding:2px 6px; border-radius:4px; }
+  .muted { color:#a0a4ab; font-size:14px; }
+</style>
+</head>
+<body>
+  <h1>🪙 Verve Paywall — One-Click Test Payment</h1>
+  <p class="muted">This calls a $0.01 test endpoint on your local Verve Paywall API. Click the button, approve in MetaMask, done. Uses your existing testnet USDC — no ETH required (the facilitator covers gas).</p>
+
+  <div class="card">
+    <div id="wallet-status" class="muted">Wallet not connected.</div>
+    <button id="connect-btn">1. Connect MetaMask</button>
+  </div>
+
+  <div class="card">
+    <p class="muted">Endpoint: <code>GET /api/crypto/price?coin=bitcoin</code> — $0.01 USDC on Base Sepolia</p>
+    <button id="pay-btn" disabled>2. Pay $0.01 &amp; Get Bitcoin Price</button>
+  </div>
+
+  <div id="result"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+const CHAIN_ID_HEX = "0x14a34"; // 84532 Base Sepolia
+const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+
+let provider, signer, userAddress;
+
+const walletStatusEl = document.getElementById("wallet-status");
+const connectBtn = document.getElementById("connect-btn");
+const payBtn = document.getElementById("pay-btn");
+const resultEl = document.getElementById("result");
+
+function showResult(msg, cls) {
+  resultEl.innerHTML = `<div class="status ${cls}">${msg}</div>`;
+}
+
+connectBtn.onclick = async () => {
+  if (!window.ethereum) {
+    showResult("MetaMask not found. Please install the MetaMask extension.", "err");
+    return;
+  }
+  try {
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    signer = await provider.getSigner();
+    userAddress = await signer.getAddress();
+
+    // Ensure Base Sepolia network
+    try {
+      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_ID_HEX }] });
+    } catch (switchErr) {
+      if (switchErr.code === 4902) {
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: CHAIN_ID_HEX,
+            chainName: "Base Sepolia",
+            rpcUrls: ["https://sepolia.base.org"],
+            nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+            blockExplorerUrls: ["https://sepolia.basescan.org"]
+          }]
+        });
+      }
+    }
+
+    walletStatusEl.textContent = `Connected: ${userAddress}`;
+    payBtn.disabled = false;
+    showResult("Wallet connected. Ready to pay.", "info");
+  } catch (e) {
+    showResult("Connection failed: " + e.message, "err");
+  }
+};
+
+// EIP-3009 transferWithAuthorization signing (gasless payment)
+// Returns a full PaymentPayload matching the x402 v2 schema
+async function signTransferAuthorization(paymentRequired) {
+  const accepted = paymentRequired.accepts[0];
+  const amount = accepted.amount;
+  const payTo = accepted.payTo;
+
+  const now = Math.floor(Date.now() / 1000);
+  const validAfter = "0";
+  const validBefore = String(now + accepted.maxTimeoutSeconds);
+  const nonce = ethers.hexlify(ethers.randomBytes(32));
+
+  const domain = {
+    name: accepted.extra?.name || "USDC",
+    version: accepted.extra?.version || "2",
+    chainId: 84532,
+    verifyingContract: accepted.asset
+  };
+
+  const types = {
+    TransferWithAuthorization: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "validAfter", type: "uint256" },
+      { name: "validBefore", type: "uint256" },
+      { name: "nonce", type: "bytes32" }
+    ]
+  };
+
+  const authorization = {
+    from: userAddress,
+    to: payTo,
+    value: amount,
+    validAfter,
+    validBefore,
+    nonce
+  };
+
+  const signature = await signer.signTypedData(domain, types, authorization);
+
+  // Build the FULL PaymentPayload per the x402 v2 schema
+  return {
+    x402Version: 2,
+    payload: {
+      authorization,
+      signature
+    },
+    accepted: {
+      scheme: accepted.scheme,
+      network: accepted.network,
+      asset: accepted.asset,
+      amount: accepted.amount,
+      payTo: accepted.payTo,
+      maxTimeoutSeconds: accepted.maxTimeoutSeconds,
+      extra: accepted.extra || {}
+    },
+    resource: paymentRequired.resource
+  };
+}
+
+payBtn.onclick = async () => {
+  payBtn.disabled = true;
+  showResult("Calling API...", "info");
+  try {
+    const url = `${API_BASE}/api/crypto/price?coin=bitcoin`;
+    const first = await fetch(url);
+
+    if (first.status !== 402) {
+      const data = await first.json();
+      showResult("Got response without payment (unexpected):\n" + JSON.stringify(data, null, 2), "ok");
+      payBtn.disabled = false;
+      return;
+    }
+
+    const paymentRequiredHeader = first.headers.get("payment-required");
+    const decoded = JSON.parse(atob(paymentRequiredHeader));
+    showResult("402 received. Signing payment authorization in MetaMask — check the popup...", "info");
+
+    const paymentPayload = await signTransferAuthorization(decoded);
+    const encoded = btoa(JSON.stringify(paymentPayload));
+
+    showResult("Signed! Retrying request with payment...", "info");
+
+    const second = await fetch(url, {
+      headers: { "PAYMENT-SIGNATURE": encoded }
+    });
+    const body = await second.text();
+
+    if (second.status === 200) {
+      showResult("✅ PAYMENT SUCCESSFUL!\n\n" + body, "ok");
+    } else {
+      // The real rejection reason lives in the payment-required header,
+      // not the JSON body (which is often just "{}").
+      let reasonMsg = "";
+      const pr = second.headers.get("payment-required");
+      if (pr) {
+        try {
+          const decoded = JSON.parse(atob(pr));
+          reasonMsg = "\n\nReason: " + (decoded.error || JSON.stringify(decoded));
+        } catch (e) { /* ignore decode errors */ }
+      }
+      showResult(`Status ${second.status}: ${body}${reasonMsg}`, "err");
+    }
+  } catch (e) {
+    showResult("Error: " + e.message, "err");
+  }
+  payBtn.disabled = false;
+};
+</script>
+</body>
+</html>

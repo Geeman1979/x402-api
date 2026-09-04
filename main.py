@@ -248,12 +248,20 @@ async def pay_demo():
 
 
 @app.get("/.well-known/x402")
-async def well_known_x402():
+async def well_known_x402(request: Request):
     """x402 discovery manifest per IETF draft-hawkins-x402-dns-discovery.
 
     kind=resource-server: this host sells x402-gated resources; settlement
     happens via the community facilitator, not on this host.
+    Base URL resolves from PUBLIC_BASE_URL if set, else from the request host,
+    so the manifest is always correct regardless of deployment domain.
     """
+    base = PUBLIC_BASE_URL
+    if not base or "127.0.0.1" in base or "localhost" in base:
+        # derive from the request (works on any deployment domain)
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "127.0.0.1:8000"
+        proto = request.headers.get("x-forwarded-proto", "https" if "vercel" in host or not host.startswith("127") else "http")
+        base = f"{proto}://{host}"
     from datetime import datetime as _dt
     return {
         "x402Version": 2,

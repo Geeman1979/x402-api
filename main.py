@@ -27,6 +27,7 @@ from x402.http.facilitator_client import HTTPFacilitatorClient
 from x402.http.facilitator_client_base import FacilitatorConfig
 from x402.http.middleware.fastapi import payment_middleware
 from x402.mechanisms.evm.exact import ExactEvmServerScheme
+import warnings as _warnings
 from x402.extensions.bazaar import declare_discovery_extension
 from x402.extensions.bazaar.resource_service import OutputConfig
 
@@ -202,33 +203,17 @@ ROUTES = {
     },
 }
 
-x402_mw = payment_middleware(ROUTES, server)
+# NOTE: the bazaar SDK warns at declaration time that input lacks 'method',
+# but method is auto-injected from the route key at request time (verified
+# in live 402 responses) — the warning is a declaration-time false positive.
+with _warnings.catch_warnings():
+    _warnings.filterwarnings("ignore", message=".*invalid bazaar extension.*")
+    x402_mw = payment_middleware(ROUTES, server)
 
 
 @app.middleware("http")
 async def payment_check(request: Request, call_next):
-    # TEMP DEBUG: decode payment-signature payload for diagnosis
-    if request.url.path == "/api/crypto/price":
-        sig = request.headers.get("payment-signature")
-        if sig:
-            try:
-                import base64, json as _json
-                decoded = _json.loads(base64.b64decode(sig))
-                print("DEBUG decoded payment payload:", _json.dumps(decoded, indent=2))
-            except Exception as e:
-                print("DEBUG failed to decode payment-signature:", e)
-    response = await x402_mw(request, call_next)
-    # TEMP DEBUG: log the response's payment-required header (contains the real rejection reason)
-    if request.url.path == "/api/crypto/price" and response.status_code == 402:
-        pr = response.headers.get("payment-required")
-        if pr:
-            try:
-                import base64, json as _json
-                decoded = _json.loads(base64.b64decode(pr))
-                print("DEBUG 402 rejection reason:", _json.dumps(decoded, indent=2))
-            except Exception as e:
-                print("DEBUG failed to decode payment-required response:", e)
-    return response
+    return await x402_mw(request, call_next)
 
 
 # ──────────────────────────────────────────────────────────────

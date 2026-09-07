@@ -1,4 +1,4 @@
-Test"""
+"""
 Verve Paywall API — a pay-per-call API using the x402 protocol.
 
 Endpoints sell for USDC on Base L2. Payment is automatic via x402:

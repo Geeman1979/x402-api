@@ -35,14 +35,29 @@ from x402.extensions.bazaar.resource_service import OutputConfig
 # CONFIG — set these in a .env file (see README)
 # ──────────────────────────────────────────────────────────────
 PAY_TO = os.environ.get("WALLET_ADDRESS", "0x0000000000000000000000000000000000000000")
-# Live community facilitator supports "exact" on Base Sepolia testnet (eip155:84532).
-# USDC on Base mainnet (eip155:8453) requires a facilitator that supports mainnet —
-# swap NETWORK when one is available or when self-hosting a facilitator.
+# NETWORK: mainnet = eip155:8453 (real USDC), testnet = eip155:84532 (faucet USDC)
 NETWORK = os.environ.get("NETWORK", "eip155:84532")
 FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://x402.org/facilitator")
 # Public URL of this API (used in the /.well-known/x402 manifest).
 # MUST be the real public HTTPS URL when deployed — localhost only for local dev.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000")
+
+# ── Facilitator selection ─────────────────────────────────────
+# Mainnet requires an authenticated facilitator (the community x402.org one
+# only serves testnets). If CDP API keys are present, use Coinbase's hosted
+# facilitator — the official mainnet settlement service.
+CDP_API_KEY_ID = os.environ.get("CDP_API_KEY_ID", "")
+CDP_API_KEY_SECRET = os.environ.get("CDP_API_KEY_SECRET", "")
+IS_MAINNET = NETWORK == "eip155:8453"
+
+facilitator_client = None
+if IS_MAINNET and CDP_API_KEY_ID and CDP_API_KEY_SECRET:
+    from cdp.x402 import create_facilitator_config
+    facilitator_client = HTTPFacilitatorClient(
+        create_facilitator_config(CDP_API_KEY_ID, CDP_API_KEY_SECRET)
+    )
+else:
+    facilitator_client = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
 
 app = FastAPI(title="Verve Paywall API", version="1.0.0")
 app.add_middleware(
@@ -56,8 +71,7 @@ app.add_middleware(
 # ──────────────────────────────────────────────────────────────
 # x402 setup — the "coin slot" on the vending machine
 # ──────────────────────────────────────────────────────────────
-facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
-server = x402ResourceServer(facilitator)
+server = x402ResourceServer(facilitator_client)
 server.register("eip155:*", ExactEvmServerScheme())
 
 ROUTES = {

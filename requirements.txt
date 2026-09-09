@@ -8,3 +8,4 @@ python-dotenv>=1.0
 web3>=7.0
 eth-account>=0.13
 jsonschema>=4.20
+cdp-sdk>=1.0
